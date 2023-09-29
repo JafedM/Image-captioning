@@ -56,48 +56,13 @@ def get_trgts(trg, device='cuda'):
     return trg.to(device), trg_seq.to(device)
 
 
-""" def train_epoch(model, train_dataloader, optimizer, device):
-    ''' Epoch operation in training phase'''
-
-    model.to(device)
-    model.train()
-
-    for batch in tqdm(train_dataloader, 'Entrenando'):
-
-        # prepare data
-        img, caption_seq = batch
-        img = img.to(device)
-        caption_seq, trg_seq = get_trgts(caption_seq, device)
-
-        # forward
-        optimizer.zero_grad()
-        pred = model(img, caption_seq)
-
-        #print(pred.shape)
-        #print(trg_seq.shape)
-        '''
-        Como el pred es de dimension 3 y el trg_seq es de dim 2
-        ajustamos a que pred sea de dim 2 y el trg_seq de dim 1
-        para poder calcular el cross entropy
-        el contigous es necsario para ajustar el tamano como en la atencion
-        '''
-        pred = pred.view(-1, pred.size(2))
-        trg_seq = trg_seq.contiguous().view(-1)
-
-        # backward and update parameters
-        loss = F.cross_entropy(pred, trg_seq) # ,gold Revisar esto
-        loss.backward()
-        optimizer.step()
-
-    return loss """
-
 def train_epoch(model, train_dataloader, optimizer, device):
     ''' Epoch operation in training phase'''
 
     model.to(device)
     model.train()
 
-    criterion = torch.nn.CrossEntropyLoss( )
+    criterion = torch.nn.CrossEntropyLoss(reduction='none')
 
     for batch in tqdm(train_dataloader, 'Entrenando'):
 
@@ -121,10 +86,11 @@ def train_epoch(model, train_dataloader, optimizer, device):
         loss=0
         #soft = nn.Softmax(dim=0)
         for i in range(len(pred)):
-            loss += criterion(pred[i], trg_seq[i])
+            loss = loss + criterion(pred[i], trg_seq[i])[trg_seq[i] != 0].mean()
             #pred = pred.view(-1, pred.size(2))
             #trg_seq = trg_seq.contiguous().view(-1)
             #print('\n')
+        loss = loss/len(pred)
 
         # backward and update parameters
         #loss = criterion(pred, trg_seq) # ,gold Revisar esto
@@ -133,12 +99,29 @@ def train_epoch(model, train_dataloader, optimizer, device):
 
     return loss
 
-
+def inference(model, img, trg_seq, sec_len=15):
+    pred_seq = [trg_seq[0]]*len(trg_seq)
+    pred_seq = torch.tensor(pred_seq).to('cuda')
+    model.to('cuda')
+    for i in range(sec_len-1):
+        out = model(img.view((1,3,256,256)).to('cuda'), pred_seq.view(1,len(trg_seq)))
+        word = torch.argmax(F.softmax(out, dim=2), dim=2)[0,i].item()
+        pred_seq[i+1] = word
+    print('Predicted: ', pred_seq)
+    print('Real: ', trg_seq)
+    
 def eval_epoch(model, val_dataloader, device):
     ''' Epoch operation in evaluation phase '''
 
     model.to(device)
     model.eval()
+
+    i=0
+
+    for batch in val_dataloader:
+        img_ex, trg_cap = batch
+        img_ex, trg_cap = img_ex[0], trg_cap[0]
+    inference(model, img_ex, trg_cap)
 
     with torch.no_grad():
         for batch in tqdm(val_dataloader, 'Validacion'):
@@ -163,6 +146,7 @@ def eval_epoch(model, val_dataloader, device):
                 loss += F.cross_entropy(pred[i], trg_seq[i])
 
     return loss
+
 
 
 
@@ -201,6 +185,7 @@ def train(model, epoch, train_dataloader, val_dataloader, optimizer, device, out
 
 def main():
     
+    print('Leyendo w2v')
     w2v, word_idx, idx_word = read_w2v('word2vec_lim.txt')
 
     train_ims   = r'C:\Users\jafse\Documents\Maestria cimat\Proyecto tecnologico\YOLOv5-mask\data\coco2017\train2017'
@@ -208,38 +193,47 @@ def main():
     train_caps  = r'C:\Users\jafse\Documents\Maestria cimat\Proyecto tecnologico\YOLOv5-mask\data\coco2017\annotations_2\captions_train2017.json'
     val_caps    = r'C:\Users\jafse\Documents\Maestria cimat\Proyecto tecnologico\YOLOv5-mask\data\coco2017\annotations_2\captions_val2017.json'
 
+    print('Leyendo captions y creando dataloader')
     train_dict = load_captions_to_w2v(train_caps, train_ims, word_idx=word_idx)
     val_dict   = load_captions_to_w2v(val_caps, val_ims, word_idx=word_idx)
 
     train_dataset = ICDataset(train_dict, train_ims)
     val_dataset = ICDataset(val_dict, val_ims)
 
-    lr = 0.0001
-    epochs = 5
+    lr = 1e-5
+    epochs = 20
     device = torch.device('cuda')
-    weight_decay = 0.0001
-    beta1 = 0.9
-    beta2 = 0.999
-    chkp_path = 'best'
+    weight_decay = 1e-6
+    beta1 = 0.5
+    beta2 = 0.5
+    chkp_path = 'best_22'
 
     batch_size = 128
 
     train_dataloader = DataLoader(train_dataset,
                                 batch_size=batch_size,
-                                shuffle=True, 
+                                shuffle=True,
+                                num_workers=6, 
                                 drop_last=True)
 
     val_dataloader = DataLoader(val_dataset,
                                 batch_size=batch_size,
                                 shuffle=True,
+                                num_workers=6,
                                 drop_last=True)
 
     torch.cuda.empty_cache()
 
-    model = Transformer(vocab_len=len(word_idx), emb_dim=100, d_model=100, d_hidden=1028,
-                    n_layers=1, h=1, n_position=50, w2v=torch.tensor(w2v),mask=True)
+
+    model = Transformer(vocab_len=len(word_idx), emb_dim=512, d_model=512, d_hidden=512,
+                    n_layers=5, h=8, n_position=512, mask=True)
     
     optimzer = optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay, betas = (beta1, beta2))
+
+    for batch in val_dataloader:
+        img_ex, trg_cap = batch
+        img_ex, trg_cap = img_ex[0], trg_cap[0]
+    inference(model, img_ex, trg_cap)
 
     train(model, epochs, train_dataloader, val_dataloader, optimzer, device, chkp_path)
 

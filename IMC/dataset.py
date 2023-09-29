@@ -13,7 +13,7 @@ from nltk.tokenize import TweetTokenizer
 import argparse
 
 
-def read_w2v(w2v_path):
+def read_w2v(w2v_path, max_vocab=5000):
     w2v = []
     word_idx = {}
     idx_word = []
@@ -21,6 +21,8 @@ def read_w2v(w2v_path):
         for n, line in enumerate(file):
             if n==0:
                 vocab_len, w2v_dim = line.split(' ')
+            elif n==max_vocab:
+                break
             else:
                 line = line.split(' ')
                 word_idx[line[0]] = n-1
@@ -102,10 +104,11 @@ class ICDataset(Dataset):
         img = Image.open(self.imgs_path + "/" + file_name)
         img = img.convert('RGB')#Algunas imagenes estan en blanco y negro
         img = self.resize_img(self.img_to_tensor(img)).float()
+
+        #Revisar porque al parecer los esta inviertiendo
+        img[0], img[1], img[2] = 255-img[0], 255-img[1], 255-img[2]
         
         #Cargando captions
         capts = self.ann_dict[self.ann_idx[i]]["caption"]
-        if type(capts)==list:
-            capt_idx = choice(range(len(capts)))
-        capts = torch.tensor(capts[capt_idx])
+        capts = torch.tensor(capts[0])
         return img, capts

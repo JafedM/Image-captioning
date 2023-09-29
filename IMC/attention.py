@@ -30,7 +30,7 @@ class MultiHeadAttn(nn.Module):
         #Normalizacion para la residual
         self.norm = nn.LayerNorm(d_model, eps=1e-6)
 
-    def forward(self, query, key, values, mask=False):
+    def forward(self, query, key, values, mask=None):
         '''
         q: Querry Matrix
         k: Key Matrix
@@ -38,7 +38,7 @@ class MultiHeadAttn(nn.Module):
         mask: Si se hace la mascara o no
         '''
         #Guardar residual
-        residual = query.clone() #Podria ser cualquiera porque se pasan copias del mismo
+        residual = query #Podria ser cualquiera porque se pasan copias del mismo
 
         #Tamano del batch para no perderlo al multiplicar
         batch_size = values.size(0)
@@ -48,12 +48,14 @@ class MultiHeadAttn(nn.Module):
                               for layer, x in zip(self.linears,(query, key, values))]
         
         #Pasarlos por la capa de attencion
+        if mask is not None:
+            mask = mask.unsqueeze(1)    #Hacer que los valores ajuste en el tamano
         x = self.attention(query, key, values, mask)
 
-        #Concatenar y que quede del tamano orignial (batch_size, emb_dim, d_model)
+        #Concatenar y que quede del tamano orignial (batch_size, max_len_dim, d_model)
         x = x.transpose(1, 2).contiguous().view(batch_size, -1, self.h * self.d_k)
         x = self.output(x)
-
+        
         #Agregar parte residual y normalizar
         x += residual
         return self.norm(x)
@@ -67,19 +69,18 @@ class Attention(nn.Module):
     Solo creo el forward para que se considere el gradiente y no tener copias de q,k,v
     '''
 
-    def forward(self, query, key, values, mask=False):
+    def forward(self, query, key, values, mask=None):
         '''
         q: Querry Matrix
         k: Key Matrix
         v: Value Matrix
         '''
         #Se calculan QK^T/sqrt(d_k)
-        attn_scores = torch.matmul(query, key.transpose(-2, -1)) / math.sqrt(query.size(-1))
+        attn_scores = torch.matmul(query, key.transpose(2, 3)) / math.sqrt(query.size(-1))
         
         #Se agrega la mascara si se necesita
-        if mask:
-            scores = scores.masked_fill(mask == 0, -1e10)
-
+        if mask is not None:
+            attn_scores = attn_scores.masked_fill(mask == 0, -1e10)
         #Se calcula softmax y multiplica: softmax(QK^T/sqrt(d_k))V
         attn_scores = F.softmax(attn_scores, dim=-1)
         return torch.matmul(attn_scores, values)

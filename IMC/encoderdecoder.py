@@ -35,7 +35,7 @@ class Decoder(nn.Module):
         self.layer_norm = nn.LayerNorm(d_model, eps=1e-6)
         self.d_model = d_model
 
-    def forward(self, trg_seq, encoder_out, mask=False):
+    def forward(self, trg_seq, encoder_out, mask=None):
         #Pasar por el embeding
         decoder_out = self.emb(trg_seq)
         #Pasar por el posemb
@@ -63,22 +63,26 @@ class EncoderImg(nn.Module):
 
         #Resnet50 No entrenable
         self.resnet = torchvision.models.resnet50(weights='ResNet50_Weights.IMAGENET1K_V1')
+        self.resnet = nn.Sequential(*list(self.resnet.children())[:-2])
         for param in self.resnet.parameters():
             param.requires_grad = False
         #salida tamano mil de resnet50
-        flatten_dim = 1000 
-        #Capas lineales
-        self.w_1 = nn.Linear(flatten_dim, d_hidden)
-        self.w_2 = nn.Linear(d_hidden, d_model)
+        flatten_dim = 2048 #ajustar
         #Normalizacion para la residual
-        self.norm = nn.LayerNorm(d_model, eps=1e-6)
+        self.norm = nn.LayerNorm(flatten_dim, eps=1e-6)
+        #Capas lineales
+        self.w_1 = nn.Linear(flatten_dim, d_model)
+        
 
     def forward(self, img):
         #Pasar por la cabeza de atencion
         out = self.resnet(img)
+        out = out.view(-1,out.size(1),out.size(2)*out.size(3)).transpose(1,2)
+        out = self.norm(out)
+        out = F.relu(out)
         #Pasar por el feed-forward
-        out = self.w_2(F.relu(self.w_1(out)))
-        return self.norm(out)
+        out = self.w_1(out)
+        return out
 
 
 class DecoderLayer(nn.Module):
@@ -99,12 +103,12 @@ class DecoderLayer(nn.Module):
         self.cross_attn = MultiHeadAttn(h, d_model) #cross attention
         self.pos_fedfod = PossFeedForward(d_model, d_hidden)
 
-    def forward(self, decoder_input, encoder_out, mask=False):
+    def forward(self, decoder_input, encoder_out, mask=None):
         #Pasar por auto atencion
         decoder_out = self.slf_attn(decoder_input, decoder_input, decoder_input, mask)
 
-        #Cross atencion (querry del decoder y los demas del encoder)
-        decoder_out = self.slf_attn(decoder_out, encoder_out, encoder_out, mask)
+        #Cross atencion (querry del decoder y los demas del encoder) no necesita mascara
+        decoder_out = self.cross_attn(decoder_out, encoder_out, encoder_out, None)
 
         #Pasar por el feed-forward
         return self.pos_fedfod(decoder_out)
@@ -125,7 +129,7 @@ class PossFeedForward(nn.Module):
 
     def forward(self, x):
         #Guardar residual
-        residual = x.clone()
+        residual = x
 
         #Hacer el feed-forward
         x = self.w_2(F.relu(self.w_1(x)))
